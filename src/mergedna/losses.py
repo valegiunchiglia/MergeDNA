@@ -10,7 +10,17 @@ from .model import ForwardOutput, MergeDNA
 
 def mtr_loss(outputs: List[ForwardOutput], targets: torch.Tensor) -> torch.Tensor:
     """
-    Merged Token Reconstruction loss (Eq. 6 style, averaged across batch).
+    Compute `L_MTR` as base-level cross-entropy reconstruction.
+
+    Paper mapping:
+    - Eq. (6): Merged Token Reconstruction objective.
+
+    Args:
+        outputs: Per-sample model outputs; each `out.logits` is `[N, 4]`.
+        targets: Ground-truth base ids `[B, N]`.
+
+    Returns:
+        Scalar mean cross-entropy across batch samples.
     """
     # Reconstruction loss - main - without latent selective merge
     losses = []
@@ -51,11 +61,21 @@ def sample_amtm_masks(
     outputs_latent: List[ForwardOutput], targets: torch.Tensor
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     """
-    Sample AMTM masks at local-token and base-token levels.
+    Sample AMTM masks from latent grouping structure.
+
+    Paper mapping:
+    - Sec. 3.4 Adaptive Masked Token Modeling.
+    - Build `P_L` from latent groups (`~1/g_i^2`), sample `K` local tokens
+      without replacement, then map mask to base space via source matrix `S`.
+
+    Args:
+        outputs_latent: Outputs from latent-selective pass. Each item must
+            provide `latent_source_matrix` (`S'`) and local `source_matrix` (`S`).
+        targets: Target batch `[B, N]`, used for device placement.
 
     Returns:
-    - masks_local: list of [L] bool masks
-    - masks_base: list of [N] bool masks
+        - `masks_local`: list of boolean local-token masks `[L]`,
+        - `masks_base`: list of boolean base-token masks `[N]`.
     """
     masks_local: List[torch.Tensor] = []
     masks_base: List[torch.Tensor] = []
@@ -96,12 +116,24 @@ def amtm_loss(
     sampled_local_keep_ratio: float,
 ) -> torch.Tensor:
     """
-    Adaptive Masked Token Modeling loss (Eq. 7 style).
+    Compute AMTM loss (`L_AMTM`) on informative masked base positions.
+
+    Paper mapping:
+    - Eq. (7): masked modeling loss over selected informative tokens.
 
     Implementation details:
-    - Masked positions are replaced with [MASK] token id (4) in input.
-    - Loss is computed only on masked base positions.
-    - Forward is done without latent selective merge for reconstruction quality.
+    - Replace masked base positions with model `mask_token_id`.
+    - Run a standard (non-latent-selective) forward pass for prediction.
+    - Compute CE only on masked base positions for each sample.
+
+    Args:
+        model: MergeDNA model instance.
+        batch_tokens: Input base tokens `[B, N]`.
+        masks_base: Boolean masks per sample, each `[N]`.
+        sampled_local_keep_ratio: Local tokenizer keep ratio for this step.
+
+    Returns:
+        Scalar AMTM loss averaged across valid samples.
     """
     masked_batch = batch_tokens.clone()
     for i, mask_n in enumerate(masks_base):

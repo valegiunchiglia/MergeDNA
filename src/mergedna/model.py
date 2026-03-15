@@ -176,16 +176,33 @@ def _apply_bipartite_merge(
     x: torch.Tensor, s: torch.Tensor, scorer: MergeScorer, n_select: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Apply one ToMe-like bipartite soft matching merge step.
+    Apply one ToMe-style bipartite merge step on a token sequence.
 
-    Design mapping to ToMe (Bolya et al., 2023):
-    - Partition alternating tokens into A and B.
-    - For each token in A, find best match in B.
-    - Keep top-r A->B matches.
-    - Merge source token (A) into destination token (B).
+    This is the local merge primitive used by `merge_mode="bipartite"` and
+    by latent global selection (`merge_to_target_length`). It follows the
+    A/B partition strategy from ToMe:
+    - split tokens into A (even positions) and B (odd positions),
+    - compute best B destination for each A token,
+    - keep the top `n_select` A->B matches by score,
+    - merge A source tokens into chosen B destination tokens.
 
-    We additionally use source-matrix-derived token sizes to perform
-    size-weighted averages (similar to "tracking token size" in ToMe).
+    Merge update rule:
+    - features use size-weighted averaging,
+    - source rows are summed (`S_new = S_dst + S_src`) to preserve coverage.
+
+    Args:
+        x: Token embeddings `[T, D]`.
+        s: Source matrix `[T, N]` mapping token rows to original positions.
+        scorer: Similarity module producing A->B best matches.
+        n_select: Number of A tokens to merge into B in this step.
+
+    Returns:
+        `(x_new, s_new)` with shapes `[(T - n_select), D]` and
+        `[(T - n_select), N]`.
+
+    Note:
+        Output order is ToMe-style (`unmerged A` then `updated B`), so unlike
+        adjacent mode this does not strictly preserve original token order.
     """
     if n_select <= 0 or x.shape[0] < 2:
         return x, s
@@ -262,7 +279,20 @@ def _apply_adjacent_merge(
     x: torch.Tensor, s: torch.Tensor, scorer: MergeScorer, n_select: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Paper-faithful local merge: only adjacent token pairs can merge.
+    Merge only adjacent pairs `(i, i+1)` within one window.
+
+    This mode is the most biologically conservative interpretation of the
+    MergeDNA local tokenizer text ("chunk adjacent bases into words") because
+    it enforces contiguity.
+
+    Args:
+        x: Token embeddings `[T, D]` for one local window.
+        s: Source matrix `[T, N]` aligned with `x`.
+        scorer: Similarity module used to score adjacent pairs.
+        n_select: Number of non-overlapping adjacent pairs to merge.
+
+    Returns:
+        `(x_new, s_new)` after merging up to `n_select` pairs.
     """
     if n_select <= 0 or x.shape[0] < 2:
         return x, s
@@ -307,8 +337,26 @@ def _apply_full_pairwise_merge(
     x: torch.Tensor, s: torch.Tensor, scorer: MergeScorer, n_select: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Full-pairwise local merge: score all token pairs in a window and
-    select top non-overlapping pairs.
+    Merge mode that scores all pairs inside one window.
+
+    Procedure:
+    - build full pairwise similarity on `[T, D]`,
+    - rank upper-triangular pairs `(i, j), i < j`,
+    - greedily select top non-overlapping pairs,
+    - merge each selected pair with size-weighted averaging.
+
+    Args:
+        x: Token embeddings `[T, D]`.
+        s: Source matrix `[T, N]`.
+        scorer: Similarity module.
+        n_select: Maximum number of non-overlapping pairs to merge.
+
+    Returns:
+        `(x_new, s_new)` with reduced token count.
+
+    Note:
+        This matches the phrase "score each pair in a local window" literally,
+        but is more expensive than adjacent/bipartite in practice.
     """
     t = x.shape[0]
     if n_select <= 0 or t < 2:
@@ -403,10 +451,25 @@ def merge_in_windows(
     merge_mode: str = "adjacent",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Local-window token merging used inside Local Encoder.
+    Apply one local merge layer independently per window using a ratio budget.
 
     Paper mapping:
-    - Eq. (5) LocalToMeAttn style reduction with source matrix updates.
+    - Sec. 3.3 / Eq. (5): local-window token merging with source updates.
+
+    Args:
+        x: Input tokens `[T, D]`.
+        s: Source matrix `[T, N]`.
+        scorer: Similarity module for pair selection.
+        window_size: Local chunk size used for independent merging.
+        merge_ratio: Fraction of tokens to remove per window (approximately).
+        merge_mode: One of `adjacent`, `bipartite`, `full_pairwise`.
+
+    Returns:
+        `(x_new, s_new)` concatenated from all window-level merges.
+
+    Note:
+        This is the simpler per-layer ratio schedule. It does not guarantee a
+        precise final target length across all local encoder layers.
     """
     # Same but using only ratio and ignore target length.
     if x.shape[0] <= 1 or merge_ratio <= 0.0:
@@ -449,11 +512,29 @@ def merge_in_windows_with_budget(
     merge_mode: str = "adjacent",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Local-window merge with an explicit removal budget.
+    Apply one local merge layer with an explicit token-removal budget.
 
-    This is a paper-fidelity helper: when local compression ratio L/N is sampled,
-    we can target a specific number of removed tokens across layers instead of
-    relying only on ratio scaling.
+    Compared with `merge_in_windows`, this function tries to remove exactly
+    `n_remove` tokens (subject to window capacity) by:
+    1) computing each window capacity `floor(T_w/2)`,
+    2) allocating budget proportionally to capacities,
+    3) distributing leftover removals by residual capacity,
+    4) running selected merge mode per window with the allocated counts.
+
+    Args:
+        x: Input token embeddings `[T, D]`.
+        s: Source matrix `[T, N]`.
+        scorer: Similarity module.
+        window_size: Local chunk length.
+        n_remove: Total tokens to remove in this layer.
+        merge_mode: One of `adjacent`, `bipartite`, `full_pairwise`.
+
+    Returns:
+        `(x_new, s_new)` after budgeted per-window merges.
+
+    Why this exists:
+        It supports paper-style sampled compression by helping the local
+        encoder hit a global target length more closely over multiple layers.
     """
     if x.shape[0] <= 1 or n_remove <= 0:
         return x, s
@@ -516,10 +597,22 @@ def merge_to_target_length(
     x: torch.Tensor, s: torch.Tensor, scorer: MergeScorer, target_len: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Global (latent) merge until target length K is reached.
+    Iteratively merge tokens until a latent target length `K` is reached.
 
     Paper mapping:
-    - Sec. 3.4 "Selection and Reconstruction": produce Z'_K and S'
+    - Sec. 3.4 ("Selection and Reconstruction"): produce `Z'_K` and `S'`.
+
+    Args:
+        x: Latent-token sequence `[L, D]`.
+        s: Latent source matrix `[L, L]` (initialized as identity).
+        scorer: Similarity module used for merge matching.
+        target_len: Desired length `K` with `1 <= K <= L`.
+
+    Returns:
+        `(z_k, s_prime)` where:
+        - `z_k` is `[K, D]`,
+        - `s_prime` is `[K, L]`, mapping selected latent tokens back to local
+          tokens for unmerging and AMTM importance estimation.
     """
     target_len = max(1, min(target_len, x.shape[0]))
     while x.shape[0] > target_len:
@@ -629,12 +722,29 @@ class MergeDNA(nn.Module):
         freeze: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Local Encoder + source matrix update.
-        # NOTE: this part of the code applies the local-window token merging.
+        Run the Local Encoder tokenizer and return merged tokens plus source map.
+
+        Paper mapping:
+        - Eq. (2): `(Z_L, S) = E_phi(X)`.
+        - Sec. 3.3: each local block performs local attention + token merge.
+
+        Args:
+            tokens: Base token ids `[N]` in `{A,C,G,T}` (and optionally `[MASK]`).
+            sampled_local_keep_ratio: Optional sampled keep ratio `L/N` for this
+                step. If provided and target enforcement is enabled, the function
+                plans layer-wise removals to approach target `L`.
+            freeze: If `True`, run under `no_grad()` and detach outputs. This is
+                used for the latent selective reconstruction loss
+                `L_MTR(theta \\ {phi})` so local tokenizer params are not updated.
 
         Returns:
-        - local tokens Z_L (Eq. 2)
-        - source matrix S in {0,1}^{L x N} (Eq. 2)
+            - `z_l`: local merged tokens `[L, D]`,
+            - `s`: source matrix `[L, N]`.
+
+        Modes:
+            - target-driven: exact-budget helper (`merge_in_windows_with_budget`)
+              to better match sampled `L`,
+            - ratio-driven: fixed per-layer merge ratios (`merge_in_windows`).
         """
         n = tokens.shape[0]
         x = self._embed_tokens(tokens)
@@ -757,11 +867,21 @@ class MergeDNA(nn.Module):
         self, z_l: torch.Tensor, keep_ratio: float
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Latent selective path for Sec. 3.4:
-        - encode context
-        - select K salient tokens via merge
-        - decode at K
-        - unmerge back to L
+        Latent selective path used for Sec. 3.4 objectives.
+
+        Pipeline:
+        1) latent encoder processes local tokens `Z_L`,
+        2) global merge selects `K` salient tokens (`L -> K`) and yields `S'`,
+        3) latent decoder operates at length `K`,
+        4) unmerge with `S'` to recover length `L`.
+
+        Args:
+            z_l: Local tokens `[L, D]`.
+            keep_ratio: Fraction of latent tokens to keep (`K ~= L * keep_ratio`).
+
+        Returns:
+            - `z_l_hat`: decoded latent sequence at local length `[L, D]`,
+            - `s_prime`: latent source matrix `[K, L]`.
         """
         # Start from output of local encoder.
         x = z_l

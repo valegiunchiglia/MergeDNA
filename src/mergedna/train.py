@@ -149,7 +149,15 @@ def evaluate(model: MergeDNA, val_loader: DataLoader, device: torch.device) -> D
 
 def _sample_local_keep_ratio(cfg: MergeDNAConfig) -> float:
     """
-    Compression-ratio sampling strategy for local tokenizer (paper Sec. 3.3).
+    Sample per-step local keep ratio `L/N` for tokenizer compression.
+
+    Paper mapping:
+    - Sec. 3.3 describes compression-ratio sampling around a target value.
+
+    Behavior:
+    - `uniform`: sample in `[min, max]`.
+    - `gaussian` (default): truncated Gaussian around `(mean, std)`.
+    - fallback: clamp to valid range if repeated Gaussian samples miss bounds.
     """
     if cfg.local_keep_ratio_sampling == "uniform":
         return random.uniform(cfg.local_keep_ratio_min, cfg.local_keep_ratio_max)
@@ -167,9 +175,16 @@ def _build_scheduler(
     optimizer: torch.optim.Optimizer, train_cfg: MergeDNATrainConfig
 ) -> Optional[torch.optim.lr_scheduler.LambdaLR]:
     """
-    Build paper-aligned LR scheduler:
-    - linear warmup
-    - cosine decay
+    Build paper-aligned learning-rate schedule (warmup + cosine).
+
+    Paper mapping:
+    - Appendix A.1 reports cosine annealing with warmup iterations.
+
+    Returns:
+        - `None` if `lr_scheduler == "none"`,
+        - otherwise a `LambdaLR` implementing:
+          1) linear warmup from step 1 to `warmup_steps`,
+          2) cosine decay from 1.0 to 0.0 afterwards.
     """
     if train_cfg.lr_scheduler == "none":
         return None
@@ -200,6 +215,15 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
       L_total = L_MTR(theta)
               + lambda * L_MTR(theta \\ {phi})    [latent selective, frozen local encoder]
               + L_AMTM(theta)
+
+    High-level flow per step:
+    1) sample local keep ratio (`L/N`),
+    2) compute `L_MTR(theta)` via standard forward,
+    3) compute `L_MTR(theta\\{phi})` via latent-selective forward with frozen
+       local encoder,
+    4) derive AMTM masks from latent grouping and compute `L_AMTM(theta)`,
+    5) optimize total loss with AMP + grad clipping + AdamW + scheduler,
+    6) log train/eval metrics and checkpoint periodically.
     """
     set_seed(train_cfg.seed)
     device = torch.device(train_cfg.device)

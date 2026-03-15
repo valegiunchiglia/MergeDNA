@@ -14,9 +14,15 @@ ID_TO_DNA = {v: k for k, v in DNA_TO_ID.items()}
 
 def encode_dna(seq: str) -> List[int]:
     """
-    Convert DNA string to integer ids.
+    Convert a raw DNA string to integer token ids.
 
-    Non-ACGT characters are skipped to keep this implementation simple and safe.
+    Mapping:
+    - `A -> 0`, `C -> 1`, `G -> 2`, `T -> 3`.
+
+    Notes:
+    - Input is uppercased before mapping.
+    - Non-ACGT characters are skipped (e.g., `N`), which keeps preprocessing
+      robust on mixed-quality FASTA files.
     """
     ids = []
     for ch in seq.upper():
@@ -30,6 +36,9 @@ def _iter_fasta_sequences(path: str) -> Iterator[str]:
     Stream FASTA sequences one record at a time.
 
     Supports plain text FASTA and gzip-compressed FASTA (.gz).
+
+    This iterator is memory-efficient because it yields records lazily rather
+    than loading all content at once.
     """
     p = Path(path)
     # Open the file in text mode and gz mode
@@ -52,9 +61,10 @@ def _iter_fasta_sequences(path: str) -> Iterator[str]:
 
 def load_fasta_sequences(path: str) -> List[str]:
     """
-    Minimal FASTA parser.
+    Load all FASTA records into memory as sequence strings.
 
-    We avoid external bio packages in this implementation.
+    This is a thin wrapper over `_iter_fasta_sequences` for places where a
+    materialized list is easier to handle.
     """
     return list(_iter_fasta_sequences(path))
 
@@ -82,10 +92,15 @@ class RandomDNADataset(Dataset):
 
 class FASTADataset(Dataset):
     """
-    FASTA window dataset.
+    Random-window dataset over FASTA sequences.
 
-    For each item, sample a random window from a random sequence.
-    This approximates random chunking used in many sequence pretraining pipelines.
+    Each `__getitem__` samples:
+    1) one sequence uniformly from loaded sequences,
+    2) one random start offset,
+    3) a fixed-length window of size `seq_len`.
+
+    This matches common genome pretraining practice of random chunk sampling and
+    allows many different windows to be drawn from the same source sequence.
     """
 
     def __init__(
