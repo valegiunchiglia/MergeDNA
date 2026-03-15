@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--latent-selective-mode",
         type=str,
-        default="posthoc",
+        default="interleaved",
         choices=["posthoc", "interleaved"],
         help="Latent selective merge mode: posthoc or interleaved (paper-closer).",
     )

@@ -12,9 +12,11 @@ PyTorch implementation of MergeDNA based on the paper:
   - `L_MTR(theta)`
   - `lambda * L_MTR(theta \ {phi})`
   - `L_AMTM(theta)`
-- Paper-style optimization defaults:
+- Optimization defaults:
   - AdamW (`lr=1e-4`, betas `(0.9, 0.95)`, `weight_decay=1e-8`)
-  - linear warmup + cosine annealing scheduler (`warmup_steps=10000`)
+  - linear warmup + cosine annealing scheduler
+  - challenge default (`config.py` and CLI): `warmup_steps=100` (with `steps=1000`)
+  - paper preset (`--preset paper`) auto-uses `warmup_steps=10000` unless you explicitly pass `--warmup-steps`
 - W&B logging and periodic validation
 - Best-checkpoint saving by `val_mtr`
 
@@ -103,6 +105,15 @@ Disable scheduler (optional):
 PYTHONPATH=src python scripts/main.py --lr-scheduler none
 ```
 
+Paper-like scheduler example:
+
+```bash
+PYTHONPATH=src python scripts/main.py \
+  --steps 100000 \
+  --warmup-steps 10000 \
+  --lr-scheduler cosine
+```
+
 ## Local merge modes
 
 - `adjacent` (default): merge adjacent pairs only (best biological contiguity)
@@ -138,7 +149,8 @@ PYTHONPATH=src python scripts/main.py \
   --device cuda
 ```
 
-Note: this preset is heavy and may require substantial GPU memory.
+Note: this preset is heavy and may require substantial GPU memory. It also applies
+`warmup_steps=10000` by default; pass `--warmup-steps` to override.
 
 ## Optional FASTA training
 

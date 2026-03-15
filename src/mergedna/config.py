@@ -89,10 +89,11 @@ class MergeDNATrainConfig:
     betas: tuple = (0.9, 0.95)
     grad_clip_norm: float = 1.0
     amp: bool = True
-    # Paper-aligned scheduler defaults:
-    # Cosine annealing with linear warmup.
+    # Challenge-aligned scheduler defaults:
+    # cosine annealing with short warmup for 1k-step local runs.
+    # For paper-scale training, override warmup_steps (e.g., 10_000 with 100k steps).
     lr_scheduler: str = "cosine"  # cosine | none
-    warmup_steps: int = 10_000
+    warmup_steps: int = 100
 
     # Loss weights
     lambda_latent_mtr: float = 0.25  # as paper Eq. (8)

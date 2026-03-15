@@ -31,7 +31,6 @@ import torch
 from mergedna.config import MergeDNAConfig
 from mergedna.eval.data import (
     GENOMICS_TASK_GROUPS,
-    infer_num_classes_from_labels,
     load_task_raw,
     load_task_synthetic,
     make_loaders,
@@ -114,6 +113,20 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise ValueError("Synthetic split sizes must all be > 0.")
 
 
+def _apply_label_map(labels: List[int], label_to_id: dict[int, int], split_name: str) -> List[int]:
+    remapped: List[int] = []
+    for y in labels:
+        y_int = int(y)
+        if y_int not in label_to_id:
+            known = sorted(label_to_id.keys())
+            raise ValueError(
+                f"Found unseen label {y_int} in {split_name} split. "
+                f"Known train labels: {known}"
+            )
+        remapped.append(label_to_id[y_int])
+    return remapped
+
+
 def main() -> None:
     args = parse_args()
     _validate_args(args)
@@ -158,8 +171,11 @@ def main() -> None:
                 data_root=args.data_root,
                 task_name=task_name,
             )
-        (remapped, _) = remap_labels_to_contiguous(train_y, val_y, test_y)
-        train_y, val_y, test_y = remapped
+        # Fit label mapping from train only to avoid leaking held-out label space.
+        (remapped_train_only, label_to_id) = remap_labels_to_contiguous(train_y)
+        train_y = remapped_train_only[0]
+        val_y = _apply_label_map(val_y, label_to_id=label_to_id, split_name="val")
+        test_y = _apply_label_map(test_y, label_to_id=label_to_id, split_name="test")
         train_loader, val_loader, test_loader = make_loaders(
             train_seq=train_seq,
             train_y=train_y,
@@ -170,7 +186,7 @@ def main() -> None:
             seq_len=seq_len,
             batch_size=args.batch_size,
         )
-        n_classes = infer_num_classes_from_labels(train_y, val_y, test_y)
+        n_classes = max(1, len(label_to_id))
         best = select_best_setting(
             base_model=model,
             d_model=model_cfg.d_model,

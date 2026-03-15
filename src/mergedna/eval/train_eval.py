@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List
 
 import torch
 import torch.nn.functional as F
+from scipy.stats import pearsonr, spearmanr
 from sklearn.linear_model import Ridge
 from torch.utils.data import DataLoader
 
@@ -175,21 +176,25 @@ def mse(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
 
 
 def pearson_corr(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
-    y1 = y_true - torch.mean(y_true)
-    y2 = y_pred - torch.mean(y_pred)
-    denom = torch.sqrt(torch.sum(y1 * y1) * torch.sum(y2 * y2)).clamp(min=1e-12)
-    return float((torch.sum(y1 * y2) / denom).item())
-
-
-def _rank(x: torch.Tensor) -> torch.Tensor:
-    idx = torch.argsort(x, dim=0)
-    ranks = torch.empty_like(x, dtype=torch.float32)
-    ranks[idx] = torch.arange(x.shape[0], dtype=torch.float32)
-    return ranks
+    corr, _ = pearsonr(
+        y_true.detach().cpu().numpy(),
+        y_pred.detach().cpu().numpy(),
+    )
+    # scipy can return nan for constant inputs.
+    if corr != corr:  # NaN check without numpy dependency.
+        return 0.0
+    return float(corr)
 
 
 def spearman_corr(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
-    return pearson_corr(_rank(y_true), _rank(y_pred))
+    corr, _ = spearmanr(
+        y_true.detach().cpu().numpy(),
+        y_pred.detach().cpu().numpy(),
+    )
+    # scipy can return nan for constant inputs.
+    if corr != corr:  # NaN check without numpy dependency.
+        return 0.0
+    return float(corr)
 
 
 def evaluate_regression(y_true: torch.Tensor, y_pred: torch.Tensor) -> Dict[str, float]:
