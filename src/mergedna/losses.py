@@ -112,6 +112,7 @@ def sample_amtm_masks(
 def amtm_loss(
     model: MergeDNA,
     batch_tokens: torch.Tensor,
+    masks_local: List[torch.Tensor],
     masks_base: List[torch.Tensor],
     sampled_local_keep_ratio: float,
 ) -> torch.Tensor:
@@ -129,6 +130,8 @@ def amtm_loss(
     Args:
         model: MergeDNA model instance.
         batch_tokens: Input base tokens `[B, N]`.
+        masks_local: Boolean masks per sample over local tokens `[L]`. These
+            encode which informative local tokens were sampled (`K` selections).
         masks_base: Boolean masks per sample, each `[N]`.
         sampled_local_keep_ratio: Local tokenizer keep ratio for this step.
 
@@ -148,12 +151,20 @@ def amtm_loss(
 
     losses = []
     for i, out in enumerate(outputs):
+        mask_l = masks_local[i]
         mask_n = masks_base[i]
-        if mask_n.sum() == 0:
+        # K informative local tokens sampled for this sample (paper-style
+        # normalization denominator in Eq. 7 discussion).
+        k_selected = int(mask_l.sum().item())
+        if mask_n.sum() == 0 or k_selected == 0:
             continue
         logits_masked = out.logits[mask_n]  # [K_eff, 4]
         targets_masked = batch_tokens[i][mask_n]  # [K_eff]
-        losses.append(F.cross_entropy(logits_masked, targets_masked))
+
+        # Sum CE over masked base positions, then normalize by K informative
+        # local tokens (not by number of masked base positions).
+        ce_sum = F.cross_entropy(logits_masked, targets_masked, reduction="sum")
+        losses.append(ce_sum / float(k_selected))
     if not losses:
         return torch.tensor(0.0, device=batch_tokens.device)
     return torch.stack(losses).mean()

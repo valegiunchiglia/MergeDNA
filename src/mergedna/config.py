@@ -46,6 +46,10 @@ class MergeDNAConfig:
 
     # Latent compression ratio K/L (paper conceptually uses K < L, often L/2).
     latent_keep_ratio: float = 0.5
+    # Latent selective merge behavior:
+    # - posthoc: run latent encoder at L, then one global merge L->K
+    # - interleaved: merge progressively between latent encoder blocks (paper-closer)
+    latent_selective_mode: str = "interleaved"  # posthoc | interleaved
 
     # Compression ratio sampling range around expected L for local tokenizer.
     # Used during training for robustness (paper Sec. 3.3).

@@ -322,12 +322,13 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
             loss_latent = mtr_loss(out_latent, batch)
 
             # AMTM mask sampling from latent grouping S' (Sec. 3.4).
-            _, masks_base = sample_amtm_masks(out_latent, batch)
+            masks_local, masks_base = sample_amtm_masks(out_latent, batch)
 
             # (3) L_AMTM(theta): masked prediction on informative positions.
             loss_amtm = amtm_loss(
                 model=model,
                 batch_tokens=batch,
+                masks_local=masks_local,
                 masks_base=masks_base,
                 sampled_local_keep_ratio=sampled_keep_ratio,
             )

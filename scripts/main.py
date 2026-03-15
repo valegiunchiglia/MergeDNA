@@ -6,6 +6,7 @@ This script is intentionally explicit and verbose for technical challenge clarit
 """
 
 import argparse
+import warnings
 
 from mergedna.config import MergeDNAConfig, MergeDNATrainConfig
 from mergedna.train import train_loop
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--warmup-steps",
         type=int,
-        default=10000,
+        default=100,
         help="Linear warmup steps before cosine annealing.",
     )
 
@@ -62,6 +63,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-dec-layers", type=int, default=2)
     parser.add_argument("--local-window-size", type=int, default=16)
     parser.add_argument("--latent-keep-ratio", type=float, default=0.5)
+    parser.add_argument(
+        "--latent-selective-mode",
+        type=str,
+        default="posthoc",
+        choices=["posthoc", "interleaved"],
+        help="Latent selective merge mode: posthoc or interleaved (paper-closer).",
+    )
     parser.add_argument(
         "--block-style",
         type=str,
@@ -101,6 +109,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    # Keep scheduler settings coherent for short challenge runs.
+    # If warmup consumes all steps, cosine decay is effectively disabled.
+    if args.lr_scheduler == "cosine" and args.warmup_steps >= args.steps:
+        adjusted = max(0, args.steps - 1)
+        warnings.warn(
+            "warmup_steps >= steps with cosine scheduler; "
+            f"clamping warmup_steps from {args.warmup_steps} to {adjusted} "
+            "so cosine decay can run.",
+            stacklevel=2,
+        )
+        args.warmup_steps = adjusted
+
     if args.preset == "paper":
         # Paper-like architectural defaults from implementation section:
         # D=1024, local/latent/latent-dec/local-dec = 4/20/4/2, window=16.
@@ -115,6 +135,7 @@ def main() -> None:
             latent_decoder_layers=4,
             local_window_size=16,
             latent_keep_ratio=0.5,
+            latent_selective_mode=args.latent_selective_mode,
             local_merge_mode=args.local_merge_mode,
             block_style=args.block_style,
         )
@@ -129,6 +150,7 @@ def main() -> None:
             latent_decoder_layers=args.latent_dec_layers,
             local_window_size=args.local_window_size,
             latent_keep_ratio=args.latent_keep_ratio,
+            latent_selective_mode=args.latent_selective_mode,
             local_merge_mode=args.local_merge_mode,
             block_style=args.block_style,
         )

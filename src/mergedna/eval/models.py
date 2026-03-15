@@ -16,6 +16,9 @@ import torch
 import torch.nn as nn
 
 from mergedna.model import MergeDNA
+from torch.utils.data import DataLoader
+
+from .data import build_alphabet_map
 
 
 class LoRALinear(nn.Module):
@@ -144,3 +147,57 @@ def build_frozen_lora_backbone(
     # Attach LoRA to encoder blocks.
     n_replaced = attach_lora_adapters(model, rank=rank, alpha=alpha, dropout=dropout)
     return model, n_replaced
+
+
+def _extract_batch_latent_embeddings(
+    model: MergeDNA,
+    batch_tokens: torch.Tensor,
+) -> torch.Tensor:
+    feats: List[torch.Tensor] = []
+    for i in range(batch_tokens.shape[0]):
+        z_l, _ = model.local_encode(tokens=batch_tokens[i], sampled_local_keep_ratio=None, freeze=True)
+        z = z_l
+        for block in model.latent_encoder:
+            z = block(z)
+        # Mean pooling to get a single embedding for the sequence.
+        feats.append(z.mean(dim=0))
+    return torch.stack(feats, dim=0)
+
+
+def collect_latent_features(
+    model: MergeDNA,
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Collect frozen latent features X and scalar targets y from a dataloader.
+    Returns:
+    - X: [N, D]
+    - y: [N]
+    """
+    model.eval()
+    x_all: List[torch.Tensor] = []
+    y_all: List[torch.Tensor] = []
+    with torch.no_grad():
+        for batch_tokens, batch_targets in loader:
+            batch_tokens = batch_tokens.to(device)
+            feats = _extract_batch_latent_embeddings(model, batch_tokens=batch_tokens)
+            x_all.append(feats.cpu())
+            y_all.append(batch_targets.cpu())
+    return torch.cat(x_all, dim=0), torch.cat(y_all, dim=0)
+
+
+def validate_alphabet_compatibility(model: MergeDNA, alphabet: str) -> None:
+    """
+    Ensure tokenizer alphabet size fits the model input embedding.
+
+    Current MergeDNA checkpoints in this repo use A/C/G/T + [MASK] (5 entries).
+    """
+    vocab_cap = int(model.input_embed.num_embeddings)
+    alpha_size = len(build_alphabet_map(alphabet))
+    if alpha_size > (vocab_cap - 1):
+        raise ValueError(
+            "Alphabet size exceeds model capacity for base tokens. "
+            f"alphabet_size={alpha_size}, model_input_embeddings={vocab_cap}. "
+            "Use an alphabet compatible with the checkpoint tokenizer."
+        )

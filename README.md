@@ -39,6 +39,7 @@ src/mergedna/
 scripts/
   main.py              # training entrypoint
   eval_genomics.py     # downstream SFT+LoRA evaluator (thin CLI)
+  eval_protein_fitness.py # frozen latent linear-probe evaluator
   run_train_sample.sh  # sample launcher
 ```
 
@@ -200,6 +201,42 @@ Core split modules and import paths:
 - `from mergedna.eval.data import GENOMICS_TASK_GROUPS, load_task_raw, load_task_synthetic, make_loaders, infer_num_classes_from_labels`
 - `from mergedna.eval.models import LoRALinear, SequenceClassifier, attach_lora_adapters, build_frozen_lora_backbone`
 - `from mergedna.eval.train_eval import set_seed, parse_float_grid, evaluate_loader, train_one_setting, select_best_setting`
+
+### Protein fitness (linear probe, 3-run average)
+
+Following the paper-style protocol, you can freeze the pretrained backbone,
+extract latent embeddings, train a linear regressor, and average metrics across runs:
+
+```bash
+PYTHONPATH=src python scripts/eval_protein_fitness.py \
+  --checkpoint /path/to/current-compatible-checkpoint.pt \
+  --task-name protein_fitness \
+  --data-root /path/to/protein_fitness_data \
+  --alpha-grid 0.0,1e-6,1e-4,1e-2,1.0 \
+  --n-runs 3 \
+  --batch-size 32 \
+  --device cpu
+```
+
+Synthetic smoke-test mode:
+
+```bash
+PYTHONPATH=src python scripts/eval_protein_fitness.py \
+  --checkpoint /path/to/current-compatible-checkpoint.pt \
+  --synthetic \
+  --n-runs 3 \
+  --batch-size 8 \
+  --device cpu
+```
+
+Expected file layout for real data:
+- `<data_root>/<task_name>/train.csv`
+- `<data_root>/<task_name>/val.csv`
+- `<data_root>/<task_name>/test.csv`
+
+Expected columns:
+- sequence column: one of `sequence, seq, dna, protein, text`
+- fitness/target column: one of `fitness, target, y, label`
 
 ## Checkpoints
 

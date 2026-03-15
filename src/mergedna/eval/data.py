@@ -43,6 +43,8 @@ GENOMICS_TASK_GROUPS: Dict[str, List[str]] = {
 SEQ_COL_CANDIDATES = ("sequence", "seq", "dna", "text")
 LABEL_COL_CANDIDATES = ("label", "target", "y")
 DNA_ALPHABET = ("A", "C", "G", "T")
+PROTEIN_SEQ_COL_CANDIDATES = ("sequence", "seq", "dna", "protein", "text")
+FITNESS_COL_CANDIDATES = ("fitness", "target", "y", "label")
 
 
 def task_seed(base_seed: int, task_name: str) -> int:
@@ -311,16 +313,221 @@ def infer_num_classes_from_labels(*label_lists: List[int]) -> int:
     """
     Infer number of classes from integer-encoded label lists.
 
-    This function assumes labels are class ids in `[0, C-1]` and returns `C`.
+    This function returns the number of unique labels across provided splits.
     While collecting labels, values are cast to `int` for robustness.
 
     Args:
     - `*label_lists`: one or more label lists (e.g., train/val/test)
 
     Returns:
-    - `num_classes` as `max(label) + 1`, or `1` if all inputs are empty.
+    - `num_classes` as number of unique labels, or `1` if all inputs are empty.
     """
     all_labels = set()
     for labels in label_lists:
         all_labels.update(int(x) for x in labels)
-    return (max(all_labels) + 1) if all_labels else 1
+    return len(all_labels) if all_labels else 1
+
+
+def remap_labels_to_contiguous(
+    *label_lists: List[int],
+) -> Tuple[List[List[int]], Dict[int, int]]:
+    """
+    Remap arbitrary integer labels to contiguous class ids `[0, C-1]`.
+
+    This avoids mis-sized classifier heads and out-of-range class targets when
+    datasets use sparse ids (e.g., labels `{1, 2}` or `{0, 2, 5}`).
+
+    Args:
+    - `*label_lists`: one or more label lists (e.g., train/val/test)
+
+    Returns:
+    - `remapped_lists`: list of remapped label lists in the same order,
+    - `label_to_id`: mapping from original label -> contiguous id.
+    """
+    unique_labels = sorted({int(x) for labels in label_lists for x in labels})
+    if not unique_labels:
+        return [list(labels) for labels in label_lists], {}
+    label_to_id = {label: i for i, label in enumerate(unique_labels)}
+    remapped_lists: List[List[int]] = []
+    for labels in label_lists:
+        remapped_lists.append([label_to_id[int(x)] for x in labels])
+    return remapped_lists, label_to_id
+
+
+def load_labeled_regression(path: str) -> Tuple[List[str], List[float]]:
+    """
+    Load one split file (CSV/TSV) into raw sequence strings and scalar targets.
+    """
+    delimiter = detect_delimiter(path)
+    sequences: List[str] = []
+    fitness: List[float] = []
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter=delimiter)
+        if reader.fieldnames is None:
+            raise ValueError(f"No header found in {path}")
+        seq_col = resolve_column(reader.fieldnames, PROTEIN_SEQ_COL_CANDIDATES)
+        fit_col = resolve_column(reader.fieldnames, FITNESS_COL_CANDIDATES)
+        for row in reader:
+            sequences.append(row[seq_col].strip())
+            fitness.append(float(row[fit_col]))
+    return sequences, fitness
+
+
+def load_task_regression_raw(
+    data_root: str, task_name: str
+) -> Tuple[List[str], List[float], List[str], List[float], List[str], List[float]]:
+    """
+    Load train/val/test regression splits from:
+    - <data_root>/<task_name>/train.csv
+    - <data_root>/<task_name>/val.csv
+    - <data_root>/<task_name>/test.csv
+    """
+    train_path = os.path.join(data_root, task_name, "train.csv")
+    val_path = os.path.join(data_root, task_name, "val.csv")
+    test_path = os.path.join(data_root, task_name, "test.csv")
+    if not (os.path.exists(train_path) and os.path.exists(val_path) and os.path.exists(test_path)):
+        raise FileNotFoundError(
+            f"Expected train/val/test files for task '{task_name}' under {os.path.join(data_root, task_name)}"
+        )
+    train_seq, train_y = load_labeled_regression(train_path)
+    val_seq, val_y = load_labeled_regression(val_path)
+    test_seq, test_y = load_labeled_regression(test_path)
+    return train_seq, train_y, val_seq, val_y, test_seq, test_y
+
+
+def _rand_sequence(rng: random.Random, alphabet: Sequence[str], length: int) -> str:
+    return "".join(rng.choice(alphabet) for _ in range(length))
+
+
+def _synthetic_fitness_score(seq: str, motif: str, rng: random.Random) -> float:
+    # Count motif occurrences + small Gaussian noise.
+    count = 0
+    i = 0
+    while i <= len(seq) - len(motif):
+        if seq[i : i + len(motif)] == motif:
+            count += 1
+            i += len(motif)
+        else:
+            i += 1
+    return float(count) + rng.gauss(0.0, 0.1)
+
+
+def make_synthetic_regression_split(
+    n_samples: int,
+    seq_len: int,
+    alphabet: Sequence[str],
+    motif: str,
+    seed: int,
+) -> Tuple[List[str], List[float]]:
+    """
+    Synthetic regression data:
+    - sequence is random over alphabet,
+    - target is motif-count + small noise.
+    """
+    rng = random.Random(seed)
+    seqs: List[str] = []
+    y: List[float] = []
+    for _ in range(n_samples):
+        seq = _rand_sequence(rng, alphabet, seq_len)
+        seqs.append(seq)
+        y.append(_synthetic_fitness_score(seq, motif=motif, rng=rng))
+    return seqs, y
+
+
+def load_task_regression_synthetic(
+    seq_len: int,
+    alphabet: Sequence[str],
+    train_size: int,
+    val_size: int,
+    test_size: int,
+    seed: int,
+) -> Tuple[List[str], List[float], List[str], List[float], List[str], List[float]]:
+    motif = "".join(alphabet[: min(3, len(alphabet))]) if alphabet else "ACG"
+    train_seq, train_y = make_synthetic_regression_split(
+        n_samples=train_size,
+        seq_len=seq_len,
+        alphabet=alphabet,
+        motif=motif,
+        seed=seed + 1,
+    )
+    val_seq, val_y = make_synthetic_regression_split(
+        n_samples=val_size,
+        seq_len=seq_len,
+        alphabet=alphabet,
+        motif=motif,
+        seed=seed + 2,
+    )
+    test_seq, test_y = make_synthetic_regression_split(
+        n_samples=test_size,
+        seq_len=seq_len,
+        alphabet=alphabet,
+        motif=motif,
+        seed=seed + 3,
+    )
+    return train_seq, train_y, val_seq, val_y, test_seq, test_y
+
+
+def build_alphabet_map(alphabet: str) -> Dict[str, int]:
+    letters = [c for c in alphabet.strip().upper() if c]
+    if len(letters) == 0:
+        raise ValueError("Alphabet must contain at least one character.")
+    unique = list(dict.fromkeys(letters))
+    return {ch: i for i, ch in enumerate(unique)}
+
+
+def encode_with_alphabet(seq: str, seq_len: int, alpha_map: Dict[str, int]) -> List[int]:
+    ids: List[int] = []
+    for ch in seq.upper():
+        if ch not in alpha_map:
+            raise ValueError(f"Unknown token '{ch}' for alphabet {''.join(alpha_map.keys())}")
+        ids.append(alpha_map[ch])
+    if len(ids) >= seq_len:
+        return ids[:seq_len]
+    return ids + [0] * (seq_len - len(ids))
+
+
+@dataclass
+class RegressionItem:
+    tokens: torch.Tensor
+    target: float
+
+
+class RegressionSequenceDataset(Dataset):
+    def __init__(self, sequences: List[str], targets: List[float], seq_len: int, alphabet: str) -> None:
+        if len(sequences) != len(targets):
+            raise ValueError("Sequences and targets must have equal length.")
+        self.alpha_map = build_alphabet_map(alphabet)
+        self.items: List[RegressionItem] = []
+        for seq, target in zip(sequences, targets):
+            ids = encode_with_alphabet(seq, seq_len=seq_len, alpha_map=self.alpha_map)
+            self.items.append(
+                RegressionItem(tokens=torch.tensor(ids, dtype=torch.long), target=float(target))
+            )
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        item = self.items[idx]
+        return item.tokens, torch.tensor(item.target, dtype=torch.float32)
+
+
+def make_regression_loaders(
+    train_seq: List[str],
+    train_y: List[float],
+    val_seq: List[str],
+    val_y: List[float],
+    test_seq: List[str],
+    test_y: List[float],
+    seq_len: int,
+    batch_size: int,
+    alphabet: str,
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    train_ds = RegressionSequenceDataset(train_seq, train_y, seq_len=seq_len, alphabet=alphabet)
+    val_ds = RegressionSequenceDataset(val_seq, val_y, seq_len=seq_len, alphabet=alphabet)
+    test_ds = RegressionSequenceDataset(test_seq, test_y, seq_len=seq_len, alphabet=alphabet)
+    return (
+        DataLoader(train_ds, batch_size=batch_size, shuffle=False),
+        DataLoader(val_ds, batch_size=batch_size, shuffle=False),
+        DataLoader(test_ds, batch_size=batch_size, shuffle=False),
+    )

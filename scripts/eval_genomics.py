@@ -35,6 +35,7 @@ from mergedna.eval.data import (
     load_task_raw,
     load_task_synthetic,
     make_loaders,
+    remap_labels_to_contiguous,
 )
 from mergedna.eval.train_eval import parse_float_grid, select_best_setting, set_seed
 from mergedna.model import MergeDNA
@@ -157,6 +158,8 @@ def main() -> None:
                 data_root=args.data_root,
                 task_name=task_name,
             )
+        (remapped, _) = remap_labels_to_contiguous(train_y, val_y, test_y)
+        train_y, val_y, test_y = remapped
         train_loader, val_loader, test_loader = make_loaders(
             train_seq=train_seq,
             train_y=train_y,

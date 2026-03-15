@@ -268,11 +268,17 @@ class MergeDNA(nn.Module):
         """
         Latent selective path used for Sec. 3.4 objectives.
 
-        Pipeline:
-        1) latent encoder processes local tokens `Z_L`,
-        2) global merge selects `K` salient tokens (`L -> K`) and yields `S'`,
-        3) latent decoder operates at length `K`,
-        4) unmerge with `S'` to recover length `L`.
+        Pipeline (two selectable modes):
+        - `posthoc`:
+          1) latent encoder processes local tokens `Z_L`,
+          2) one global merge selects `K` salient tokens (`L -> K`) and yields `S'`,
+          3) latent decoder operates at length `K`,
+          4) unmerge with `S'` to recover length `L`.
+        - `interleaved`:
+          1) each latent block is followed by a global merge budget,
+          2) sequence is progressively reduced toward `K`,
+          3) latent decoder operates at the final compressed length,
+          4) unmerge with accumulated `S'` to recover length `L`.
 
         Args:
             z_l: Local tokens `[L, D]`.
@@ -282,22 +288,59 @@ class MergeDNA(nn.Module):
             - `z_l_hat`: decoded latent sequence at local length `[L, D]`,
             - `s_prime`: latent source matrix `[K, L]`.
         """
-        # Start from output of local encoder.
-        x = z_l
-        for block in self.latent_encoder:
-            x = block(x)
+        l0 = z_l.shape[0]
+        k = max(1, int(l0 * keep_ratio))  # number of tokens to keep
+        mode = self.cfg.latent_selective_mode
+        # NOTE: in the paper it is a bit confusing whether it is happening posthoc or interleaved.
+        # interleaved is better representation but posthoc is simpler
+        if mode == "posthoc":
+            # Start from output of local encoder.
+            x = z_l
+            for block in self.latent_encoder:
+                x = block(x)
 
-        # get global context
-        l = x.shape[0]
-        k = max(1, int(l * keep_ratio)) # number of tokens to keep
-        # Initiliase the source matrix S' as an identity matrix. Source matrix is a matrix that maps the latent tokens to the local tokens.
-        s_prime = torch.eye(l, device=x.device, dtype=x.dtype)
-        z_k, s_prime = merge_to_target_length(
-            x=x,
-            s=s_prime,
-            scorer=self.latent_merge_scorer,
-            target_len=k,
-        )
+            # Initiliase the source matrix S' as an identity matrix. Source
+            # matrix is a matrix that maps the latent tokens to the local tokens.
+            s_prime = torch.eye(x.shape[0], device=x.device, dtype=x.dtype)
+            z_k, s_prime = merge_to_target_length(
+                x=x,
+                s=s_prime,
+                scorer=self.latent_merge_scorer,
+                target_len=k,
+            )
+        elif mode == "interleaved":
+            # Paper-closer variant: interleave latent attention blocks with
+            # global ToMe-style merges so selection happens during encoding.
+            x = z_l
+            s_prime = torch.eye(l0, device=x.device, dtype=x.dtype)
+            n_layers = len(self.latent_encoder)
+            for i, block in enumerate(self.latent_encoder):
+                x = block(x)
+                remaining_remove = max(0, x.shape[0] - k)
+                if remaining_remove <= 0:
+                    continue
+                remaining_layers = max(1, n_layers - i)
+                planned_remove = max(1, int(round(remaining_remove / float(remaining_layers))))
+                target_len_i = max(k, x.shape[0] - planned_remove)
+                x, s_prime = merge_to_target_length(
+                    x=x,
+                    s=s_prime,
+                    scorer=self.latent_merge_scorer,
+                    target_len=target_len_i,
+                )
+            # Final guard to ensure exact target length when possible.
+            if x.shape[0] > k:
+                x, s_prime = merge_to_target_length(
+                    x=x,
+                    s=s_prime,
+                    scorer=self.latent_merge_scorer,
+                    target_len=k,
+                )
+            z_k = x
+        else:
+            raise ValueError(
+                f"Unknown latent_selective_mode='{mode}'. Expected 'posthoc' or 'interleaved'."
+            )
 
         for block in self.latent_decoder:
             z_k = block(z_k)
