@@ -1,6 +1,6 @@
-# MergeDNA (From Scratch)
+# MergeDNA
 
-From-scratch PyTorch implementation of MergeDNA based on the paper:
+PyTorch implementation of MergeDNA based on the paper:
 
 - [MergeDNA (arXiv:2511.14806)](https://arxiv.org/pdf/2511.14806)
 
@@ -23,12 +23,22 @@ From-scratch PyTorch implementation of MergeDNA based on the paper:
 ```text
 src/mergedna/
   config.py
+  blocks.py
+  scoring.py
+  merge_ops.py
   data.py
-  model.py
+  model.py            # MergeDNA model assembly + forward paths
   losses.py
   train.py
+  eval/
+    __init__.py
+    data.py           # task loading, synthetic data, dataloaders
+    models.py         # LoRA adapters + sequence classifier
+    train_eval.py     # train/eval loops + HP search helpers
+  __init__.py
 scripts/
   main.py              # training entrypoint
+  eval_genomics.py     # downstream SFT+LoRA evaluator (thin CLI)
   run_train_sample.sh  # sample launcher
 ```
 
@@ -157,6 +167,39 @@ Modes:
 - `--wandb-mode online`
 - `--wandb-mode offline`
 - `--wandb-mode disabled`
+
+## Downstream evaluation
+
+Run Genomics Benchmark-style evaluation (frozen encoder + LoRA + MLP head):
+
+```bash
+PYTHONPATH=src python scripts/eval_genomics.py \
+  --checkpoint checkpoints/mergedna_best_val_mtr.pt \
+  --task-group enhancer \
+  --data-root /path/to/genomic-benchmark
+```
+
+Synthetic smoke-test mode (no CSV files needed):
+
+```bash
+PYTHONPATH=src python scripts/eval_genomics.py \
+  --checkpoint /path/to/current-compatible-checkpoint.pt \
+  --task-group species \
+  --synthetic \
+  --synthetic-train-size 8 \
+  --synthetic-val-size 4 \
+  --synthetic-test-size 4 \
+  --epochs 1 \
+  --lr-grid 1e-4 \
+  --wd-grid 0.0 \
+  --batch-size 4 \
+  --device cpu
+```
+
+Core split modules and import paths:
+- `from mergedna.eval.data import GENOMICS_TASK_GROUPS, load_task_raw, load_task_synthetic, make_loaders, infer_num_classes_from_labels`
+- `from mergedna.eval.models import LoRALinear, SequenceClassifier, attach_lora_adapters, build_frozen_lora_backbone`
+- `from mergedna.eval.train_eval import set_seed, parse_float_grid, evaluate_loader, train_one_setting, select_best_setting`
 
 ## Checkpoints
 
