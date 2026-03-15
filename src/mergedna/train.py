@@ -147,6 +147,47 @@ def evaluate(model: MergeDNA, val_loader: DataLoader, device: torch.device) -> D
     return {"val_mtr": float(np.mean(losses)) if losses else float("nan")}
 
 
+def _compression_diagnostics(
+    batch_tokens: torch.Tensor,
+    out_main: list,
+    out_latent: list,
+) -> Dict[str, float]:
+    """
+    Compute per-step compression diagnostics for N -> L -> K.
+
+    Definitions:
+    - N: base-sequence length (input tokens).
+    - L: local-token length after Local Encoder (Eq. 2).
+    - K: latent selected-token length after latent selective merge (Sec. 3.4).
+    """
+    n_vals = [int(batch_tokens[i].shape[0]) for i in range(batch_tokens.shape[0])]
+    l_vals = [int(out.local_tokens.shape[0]) for out in out_main]
+    k_vals = [
+        int(out.latent_source_matrix.shape[0]) if out.latent_source_matrix is not None else 0
+        for out in out_latent
+    ]
+
+    n_arr = np.asarray(n_vals, dtype=np.float64)
+    l_arr = np.asarray(l_vals, dtype=np.float64)
+    k_arr = np.asarray(k_vals, dtype=np.float64)
+    eps = 1e-8
+
+    return {
+        # Absolute lengths
+        "train/len_n_mean": float(n_arr.mean()),
+        "train/len_l_mean": float(l_arr.mean()),
+        "train/len_k_mean": float(k_arr.mean()),
+        "train/len_l_min": float(l_arr.min()),
+        "train/len_l_max": float(l_arr.max()),
+        "train/len_k_min": float(k_arr.min()),
+        "train/len_k_max": float(k_arr.max()),
+        # Compression ratios
+        "train/ratio_l_over_n": float((l_arr / (n_arr + eps)).mean()),
+        "train/ratio_k_over_l": float((k_arr / (l_arr + eps)).mean()),
+        "train/ratio_k_over_n": float((k_arr / (n_arr + eps)).mean()),
+    }
+
+
 def _sample_local_keep_ratio(cfg: MergeDNAConfig) -> float:
     """
     Sample per-step local keep ratio `L/N` for tokenizer compression.
@@ -307,6 +348,11 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
             scheduler.step()
 
         if step % train_cfg.log_every == 0:
+            comp_metrics = _compression_diagnostics(
+                batch_tokens=batch,
+                out_main=out_main,
+                out_latent=out_latent,
+            )
             train_metrics = {
                 "train/loss_total": total_loss.item(),
                 "train/loss_mtr_theta": loss_main.item(),  # L_MTR(theta)
@@ -317,18 +363,27 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
                 "train/local_keep_ratio": sampled_keep_ratio,
                 "train/lr": optimizer.param_groups[0]["lr"],
             }
+            train_metrics.update(comp_metrics)
             print(
                 "[train step={step}] total={loss:.4f} "
                 "L_MTR(theta)={mtr:.4f} "
                 "L_MTR(theta\\{{phi}})={lat_mtr:.4f} "
                 "lambda*L_MTR(theta\\{{phi}})={lat_mtr_w:.4f} "
-                "L_AMTM(theta)={amtm:.4f}".format(
+                "L_AMTM(theta)={amtm:.4f} "
+                "N->L->K={n:.1f}->{l:.1f}->{k:.1f} "
+                "(L/N={ln:.3f}, K/L={kl:.3f}, K/N={kn:.3f})".format(
                     step=step,
                     loss=train_metrics["train/loss_total"],
                     mtr=train_metrics["train/loss_mtr_theta"],
                     lat_mtr=train_metrics["train/loss_mtr_theta_minus_phi"],
                     lat_mtr_w=train_metrics["train/loss_mtr_theta_minus_phi_weighted"],
                     amtm=train_metrics["train/loss_amtm_theta"],
+                    n=train_metrics["train/len_n_mean"],
+                    l=train_metrics["train/len_l_mean"],
+                    k=train_metrics["train/len_k_mean"],
+                    ln=train_metrics["train/ratio_l_over_n"],
+                    kl=train_metrics["train/ratio_k_over_l"],
+                    kn=train_metrics["train/ratio_k_over_n"],
                 )
             )
             if wandb_run is not None:

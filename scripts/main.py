@@ -63,6 +63,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-window-size", type=int, default=16)
     parser.add_argument("--latent-keep-ratio", type=float, default=0.5)
     parser.add_argument(
+        "--block-style",
+        type=str,
+        default="llama",
+        choices=["llama", "standard"],
+        help="Transformer block internals: llama (RMSNorm+SwiGLU) or standard (LayerNorm+GELU).",
+    )
+    parser.add_argument(
         "--local-merge-mode",
         type=str,
         default="adjacent",
@@ -109,6 +116,7 @@ def main() -> None:
             local_window_size=16,
             latent_keep_ratio=0.5,
             local_merge_mode=args.local_merge_mode,
+            block_style=args.block_style,
         )
     else:
         model_cfg = MergeDNAConfig(
@@ -122,6 +130,7 @@ def main() -> None:
             local_window_size=args.local_window_size,
             latent_keep_ratio=args.latent_keep_ratio,
             local_merge_mode=args.local_merge_mode,
+            block_style=args.block_style,
         )
 
     train_cfg = MergeDNATrainConfig(

@@ -105,6 +105,18 @@ PYTHONPATH=src python scripts/main.py \
   --local-merge-mode adjacent
 ```
 
+## Transformer block style
+
+- `llama` (default): RMSNorm + SwiGLU with pre-norm residual blocks
+- `standard`: LayerNorm + GELU feed-forward with post-norm residual blocks
+
+Example:
+
+```bash
+PYTHONPATH=src python scripts/main.py \
+  --block-style llama
+```
+
 ## Paper-like preset
 
 ```bash

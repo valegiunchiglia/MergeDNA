@@ -17,6 +17,10 @@ class MergeDNAConfig:
     n_heads: int = 8
     ff_mult: int = 4
     dropout: float = 0.1
+    # Transformer block internals:
+    # - "llama": RMSNorm + SwiGLU + pre-norm residual
+    # - "standard": LayerNorm + GELU FFN + post-norm residual
+    block_style: str = "llama"
 
     # Local encoder/decoder depth (paper uses 4 and 2 respectively).
     local_encoder_layers: int = 4
