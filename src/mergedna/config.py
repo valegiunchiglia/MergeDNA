@@ -77,10 +77,14 @@ class MergeDNATrainConfig:
     # Optimization
     steps: int = 1000
     lr: float = 1e-4
-    weight_decay: float = 1e-6
+    weight_decay: float = 1e-8
     betas: tuple = (0.9, 0.95)
     grad_clip_norm: float = 1.0
     amp: bool = True
+    # Paper-aligned scheduler defaults:
+    # Cosine annealing with linear warmup.
+    lr_scheduler: str = "cosine"  # cosine | none
+    warmup_steps: int = 10_000
 
     # Loss weights
     lambda_latent_mtr: float = 0.25  # as paper Eq. (8)

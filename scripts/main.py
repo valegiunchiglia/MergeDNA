@@ -36,8 +36,22 @@ def parse_args() -> argparse.Namespace:
     # Optimization
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-6)
+    parser.add_argument("--weight-decay", type=float, default=1e-8)
     parser.add_argument("--amp", action="store_true", help="Enable AMP on CUDA.")
+    # Add scheduler and warmup steps
+    parser.add_argument(
+        "--lr-scheduler",
+        type=str,
+        default="cosine",
+        choices=["cosine", "none"],
+        help="Learning-rate scheduler type.",
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=10000,
+        help="Linear warmup steps before cosine annealing.",
+    )
 
     # Model size
     parser.add_argument("--d-model", type=int, default=256)
@@ -123,6 +137,8 @@ def main() -> None:
         lr=args.lr,
         weight_decay=args.weight_decay,
         amp=args.amp,
+        lr_scheduler=args.lr_scheduler,
+        warmup_steps=args.warmup_steps,
         log_every=args.log_every,
         eval_every=args.eval_every,
         ckpt_every=args.ckpt_every,

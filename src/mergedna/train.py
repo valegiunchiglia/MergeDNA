@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+import math
 from dataclasses import asdict
 from typing import Any, Dict, Optional, Tuple
 
@@ -162,6 +163,35 @@ def _sample_local_keep_ratio(cfg: MergeDNAConfig) -> float:
     return max(cfg.local_keep_ratio_min, min(cfg.local_keep_ratio_max, cfg.local_keep_ratio_mean))
 
 
+def _build_scheduler(
+    optimizer: torch.optim.Optimizer, train_cfg: MergeDNATrainConfig
+) -> Optional[torch.optim.lr_scheduler.LambdaLR]:
+    """
+    Build paper-aligned LR scheduler:
+    - linear warmup
+    - cosine decay
+    """
+    if train_cfg.lr_scheduler == "none":
+        return None
+
+    total_steps = max(1, train_cfg.steps)
+    # Cannot be negative nor equal to total steps (or greater)
+    warmup_steps = max(0, min(train_cfg.warmup_steps, total_steps - 1))
+
+    def lr_lambda(step: int) -> float:
+        # step is 0-based in LambdaLR internals.
+        if warmup_steps > 0 and step < warmup_steps:
+            return float(step + 1) / float(warmup_steps)
+        if total_steps <= warmup_steps + 1:
+            return 1.0
+        progress = (step - warmup_steps) / float(total_steps - warmup_steps - 1)
+        progress = max(0.0, min(1.0, progress))
+        # Cosine annealing from 1.0 -> 0.0
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
 def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> None:
     """
     Main pretraining loop implementing paper-style total objective:
@@ -186,6 +216,7 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
         betas=train_cfg.betas,
         weight_decay=train_cfg.weight_decay,
     )
+    scheduler = _build_scheduler(optimizer=optimizer, train_cfg=train_cfg)
     scaler = torch.amp.GradScaler(enabled=(train_cfg.amp and device.type == "cuda"))
     best_val_mtr = float("inf")
     best_ckpt_path = os.path.join(train_cfg.out_dir, "mergedna_best_val_mtr.pt")
@@ -248,6 +279,8 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=train_cfg.grad_clip_norm)
         scaler.step(optimizer)
         scaler.update()
+        if scheduler is not None:
+            scheduler.step()
 
         if step % train_cfg.log_every == 0:
             train_metrics = {
@@ -293,6 +326,7 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
                         "train_cfg": asdict(train_cfg),
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
                     },
                     best_ckpt_path,
                 )
@@ -307,6 +341,7 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
                     "train_cfg": asdict(train_cfg),
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
                 },
                 ckpt_path,
             )
@@ -321,6 +356,7 @@ def train_loop(model_cfg: MergeDNAConfig, train_cfg: MergeDNATrainConfig) -> Non
             "train_cfg": asdict(train_cfg),
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
         },
         final_path,
     )

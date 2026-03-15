@@ -12,6 +12,9 @@ From-scratch PyTorch implementation of MergeDNA based on the paper:
   - `L_MTR(theta)`
   - `lambda * L_MTR(theta \ {phi})`
   - `L_AMTM(theta)`
+- Paper-style optimization defaults:
+  - AdamW (`lr=1e-4`, betas `(0.9, 0.95)`, `weight_decay=1e-8`)
+  - linear warmup + cosine annealing scheduler (`warmup_steps=10000`)
 - W&B logging and periodic validation
 - Best-checkpoint saving by `val_mtr`
 
@@ -81,6 +84,12 @@ PYTHONPATH=src python scripts/main.py \
   --batch-size 4 \
   --seq-len 256 \
   --device cpu
+```
+
+Disable scheduler (optional):
+
+```bash
+PYTHONPATH=src python scripts/main.py --lr-scheduler none
 ```
 
 ## Local merge modes
