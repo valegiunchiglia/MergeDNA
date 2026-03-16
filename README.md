@@ -256,3 +256,14 @@ Expected columns:
 - Best checkpoint by validation MTR: `checkpoints/mergedna_best_val_mtr.pt`
 - Final checkpoint: `checkpoints/mergedna_final.pt`
 
+## Additional time/resources
+
+If more time or compute is available, the following extensions are the highest-impact next steps:
+
+- Full paper-scale pretraining runs (e.g., 100k steps with larger hardware budgets and long-context settings)
+- Automated data retrieval + canonical preprocessing scripts for pretraining/evaluation datasets (download, normalize, split, and manifest generation)
+- End-to-end reproduction of paper benchmark tables on full real datasets instead of smoke/synthetic-only checks
+- Protein-fitness support with checkpoint/tokenizer setups that natively cover full amino-acid vocabularies
+- Broader ablation and hyperparameter sweeps across merge modes, latent selective modes, block styles, and optimization settings
+- Multi-seed statistical reporting with confidence intervals for more robust comparisons
+
